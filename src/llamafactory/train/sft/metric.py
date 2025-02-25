@@ -17,7 +17,9 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional, List
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -60,6 +62,27 @@ def eval_logit_processor(logits: "torch.Tensor", labels: "torch.Tensor") -> "tor
     return torch.argmax(logits, dim=-1)
 
 
+def calculate_metrics(pred, ground_truth):
+    # Initialize a dictionary to store metrics
+    metrics = defaultdict(float)
+
+    # Get the unique class labels
+    classes = list(set(ground_truth))
+
+    for cls in classes:
+        # Create binary labels for the current class
+        binary_ground_truth = [1 if x == cls else 0 for x in ground_truth]
+        binary_pred = [1 if x == cls else 0 for x in pred]
+
+        # Calculate metrics for the current class
+        metrics[f"{cls}_acc"] = accuracy_score(binary_ground_truth, binary_pred)
+        metrics[f"{cls}_precision"] = precision_score(binary_ground_truth, binary_pred, zero_division=0)
+        metrics[f"{cls}_recall"] = recall_score(binary_ground_truth, binary_pred, zero_division=0)
+        metrics[f"{cls}_f1"] = f1_score(binary_ground_truth, binary_pred, zero_division=0)
+
+    return dict(metrics)
+
+
 @dataclass
 class ComputeAccuracy:
     r"""
@@ -97,6 +120,8 @@ class ComputeSimilarity:
     """
 
     tokenizer: "PreTrainedTokenizer"
+    task1_classes = ['是', '否', '不说话']
+    monitor_metrics = ['precision', 'recall', 'f1', 'acc']
 
     def _dump(self) -> Optional[Dict[str, float]]:
         result = None
@@ -104,10 +129,35 @@ class ComputeSimilarity:
             result = {k: float(np.mean(v)) for k, v in self.score_dict.items()}
 
         self.score_dict = {"rouge-1": [], "rouge-2": [], "rouge-l": [], "bleu-4": []}
+        for metric in self.monitor_metrics:
+            for cls in self.task1_classes:
+                self.score_dict[f"{cls}_{metric}"] = []
         return result
 
     def __post_init__(self):
         self._dump()
+    
+    def _get_tasks_results(self, decoded_preds, decoded_labels, total_classes):
+        pred_res, label_res = [], []
+        for pred, label in zip(decoded_preds, decoded_labels):
+            find = False
+            for c in total_classes:
+                if c in pred:
+                    pred_res.append(c)
+                    find = True
+                    break
+            if not find:
+                pred_res.append("wrong")
+            
+            find = False
+            for c in total_classes:
+                if c in label:
+                    label_res.append(c)
+                    find = True
+                    break
+            if not find:
+                label_res.append("wrong")
+        return pred_res, label_res
 
     def __call__(self, eval_preds: "EvalPrediction", compute_result: bool = True) -> Optional[Dict[str, float]]:
         preds, labels = numpify(eval_preds.predictions), numpify(eval_preds.label_ids)
@@ -117,6 +167,13 @@ class ComputeSimilarity:
 
         decoded_preds = self.tokenizer.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        task1_preds, task1_labels = self._get_tasks_results(decoded_preds, decoded_labels, self.task1_classes)
+        task1_metrics = calculate_metrics(task1_preds, task1_labels)
+
+        for metric in self.monitor_metrics:
+            for cls in self.task1_classes:
+                self.score_dict[f"{cls}_{metric}"].append(round(task1_metrics[f"{cls}_{metric}"] * 100, 4))
 
         for pred, label in zip(decoded_preds, decoded_labels):
             hypothesis = list(jieba.cut(pred))

@@ -1,0 +1,5 @@
+model_name_or_path: /mnt/afs/share/llama3.1-8b-base
+adapter_name_or_path: saves/llama3-8b/lora/sft_0108
+template: llama3
+infer_backend: vllm  # choices: [huggingface, vllm]
+trust_remote_code: true
